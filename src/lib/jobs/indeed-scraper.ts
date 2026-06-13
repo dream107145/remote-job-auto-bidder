@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import type { Page } from "playwright";
 import type { FetchedJob } from "@/lib/jobs/fetcher";
 import { extractSkills } from "@/lib/jobs/skills";
 
@@ -8,12 +9,10 @@ const INDEED_HOSTS: Record<string, string> = {
   ca: "https://ca.indeed.com",
 };
 
-const SCRAPE_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.9",
-};
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+const BLOCKED_TITLE = /just a moment|security check/i;
 
 export interface IndeedScraperConfig {
   searchQuery?: string;
@@ -59,6 +58,71 @@ function parseSalary(text: string | null): { min: number | null; max: number | n
   if (!numbers?.length) return { min: null, max: null };
   if (numbers.length >= 2) return { min: numbers[0], max: numbers[1] };
   return { min: numbers[0], max: null };
+}
+
+function isBlockedPage(html: string, title: string) {
+  return BLOCKED_TITLE.test(title) || /captcha-delivery|cf-challenge/i.test(html);
+}
+
+async function createIndeedBrowserSession() {
+  const { chromium } = await import("playwright");
+
+  // Indeed/Cloudflare blocks plain HTTP and headless browsers. Headed mode is the default.
+  const headless = process.env.INDEED_SCRAPE_HEADLESS === "true";
+  const browser = await chromium.launch({
+    headless,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+
+  const context = await browser.newContext({
+    userAgent: USER_AGENT,
+    locale: "en-US",
+    viewport: { width: 1366, height: 768 },
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  });
+
+  const page = await context.newPage();
+  page.setDefaultTimeout(60000);
+
+  return { browser, page };
+}
+
+async function fetchPageHtml(page: Page, url: string): Promise<string> {
+  const response = await page.goto(url, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2000);
+
+  await page
+    .waitForFunction(
+      () => {
+        const html = document.documentElement.innerHTML;
+        return (
+          document.querySelector("[data-jk]") !== null ||
+          html.includes("job_seen_beacon") ||
+          html.includes("mosaic-provider-jobcards") ||
+          /Jobs – Apply Today|job results/i.test(document.title)
+        );
+      },
+      { timeout: 45000 }
+    )
+    .catch(() => undefined);
+
+  const html = await page.content();
+  const title = await page.title();
+  const hasJobResults =
+    html.includes("data-jk") ||
+    html.includes("job_seen_beacon") ||
+    html.includes("mosaic-provider-jobcards");
+
+  if (!hasJobResults && (response?.status() === 403 || isBlockedPage(html, title))) {
+    throw new Error(
+      "Indeed blocked the sync (403/Cloudflare). Leave INDEED_SCRAPE_HEADLESS unset (headed browser) or retry from a residential network."
+    );
+  }
+
+  return html;
 }
 
 function parseListingsFromHtml(html: string, host: string): IndeedListing[] {
@@ -148,20 +212,19 @@ function parseListingsFromHtml(html: string, host: string): IndeedListing[] {
   return listings;
 }
 
-async function fetchJobDescription(host: string, jk: string): Promise<string> {
+function parseDescriptionFromHtml(html: string): string {
+  const $ = cheerio.load(html);
+  const description =
+    $("#jobDescriptionText").text().trim() ||
+    $(".jobsearch-JobComponent-description").text().trim() ||
+    $('[id*="jobDescription"]').text().trim();
+  return description.slice(0, 5000);
+}
+
+async function fetchJobDescription(page: Page, host: string, jk: string): Promise<string> {
   try {
-    const res = await fetch(`${host}/viewjob?jk=${jk}`, {
-      headers: SCRAPE_HEADERS,
-      next: { revalidate: 0 },
-    });
-    if (!res.ok) return "";
-    const html = await res.text();
-    const $ = cheerio.load(html);
-    const description =
-      $("#jobDescriptionText").text().trim() ||
-      $(".jobsearch-JobComponent-description").text().trim() ||
-      $('[id*="jobDescription"]').text().trim();
-    return description.slice(0, 5000);
+    const html = await fetchPageHtml(page, `${host}/viewjob?jk=${jk}`);
+    return parseDescriptionFromHtml(html);
   } catch {
     return "";
   }
@@ -180,62 +243,77 @@ export async function scrapeIndeedJobs(
 
   const allListings: IndeedListing[] = [];
   const seenIds = new Set<string>();
-
-  for (let page = 0; page < maxPages; page++) {
-    const url = buildSearchUrl(host, query, location, page * 10);
-    const res = await fetch(url, { headers: SCRAPE_HEADERS, next: { revalidate: 0 } });
-
-    if (!res.ok) {
-      throw new Error(`Indeed search failed (${res.status})`);
-    }
-
-    const html = await res.text();
-    const listings = parseListingsFromHtml(html, host);
-
-    if (listings.length === 0 && page === 0) {
-      throw new Error("No Indeed jobs found — page structure may have changed or request was blocked");
-    }
-
-    for (const listing of listings) {
-      if (!seenIds.has(listing.externalId)) {
-        seenIds.add(listing.externalId);
-        allListings.push(listing);
-      }
-    }
-
-    if (listings.length < 10) break;
-  }
-
   const jobs: FetchedJob[] = [];
 
-  for (const listing of allListings.slice(0, 100)) {
-    const description = fetchDescriptions
-      ? await fetchJobDescription(host, listing.externalId)
-      : listing.snippet;
-    const fullText = `${description} ${listing.snippet} ${listing.title}`;
-    const { min, max } = parseSalary(listing.salaryText);
+  const { browser, page } = await createIndeedBrowserSession();
 
-    jobs.push({
-      sourceId,
-      externalId: listing.externalId,
-      title: listing.title,
-      company: listing.company,
-      description: description || listing.snippet,
-      url: listing.url,
-      salaryMin: min,
-      salaryMax: max,
-      jobType: listing.location?.toLowerCase().includes("remote") ? "remote" : "full-time",
-      skills: extractSkills(fullText),
-      location: listing.location || "Remote",
-      postedAt: new Date().toISOString(),
-      rawData: {
-        jk: listing.externalId,
-        salaryText: listing.salaryText,
-        source: "indeed",
-        country,
-      },
-    });
+  try {
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
+      const url = buildSearchUrl(host, query, location, pageIndex * 10);
+      const html = await fetchPageHtml(page, url);
+      const listings = parseListingsFromHtml(html, host);
+
+      if (listings.length === 0 && pageIndex === 0) {
+        throw new Error(
+          "No Indeed jobs found — page structure may have changed or request was blocked"
+        );
+      }
+
+      for (const listing of listings) {
+        if (!seenIds.has(listing.externalId)) {
+          seenIds.add(listing.externalId);
+          allListings.push(listing);
+        }
+      }
+
+      if (listings.length < 10) break;
+      await page.waitForTimeout(1500);
+    }
+
+    for (const listing of allListings.slice(0, 100)) {
+      const description = fetchDescriptions
+        ? (await fetchJobDescription(page, host, listing.externalId)) || listing.snippet
+        : listing.snippet;
+      jobs.push(buildFetchedJob(sourceId, listing, description, country));
+
+      if (fetchDescriptions) {
+        await page.waitForTimeout(1000);
+      }
+    }
+  } finally {
+    await browser.close();
   }
 
   return jobs;
+}
+
+function buildFetchedJob(
+  sourceId: string,
+  listing: IndeedListing,
+  description: string,
+  country: string
+): FetchedJob {
+  const fullText = `${description} ${listing.snippet} ${listing.title}`;
+  const { min, max } = parseSalary(listing.salaryText);
+
+  return {
+    sourceId,
+    externalId: listing.externalId,
+    title: listing.title,
+    company: listing.company,
+    description,
+    url: listing.url,
+    salaryMin: min,
+    salaryMax: max,
+    jobType: listing.location?.toLowerCase().includes("remote") ? "remote" : "full-time",
+    skills: extractSkills(fullText),
+    location: listing.location || "Remote",
+    postedAt: new Date().toISOString(),
+    rawData: {
+      jk: listing.externalId,
+      salaryText: listing.salaryText,
+      source: "indeed",
+      country,
+    },
+  };
 }
