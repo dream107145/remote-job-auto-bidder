@@ -1,4 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/server";
+import { extractSkills } from "@/lib/jobs/skills";
+import { scrapeIndeedJobs, type IndeedScraperConfig } from "@/lib/jobs/indeed-scraper";
 
 export interface FetchedJob {
   sourceId: string;
@@ -14,6 +16,10 @@ export interface FetchedJob {
   location: string | null;
   postedAt: string | null;
   rawData: Record<string, unknown>;
+}
+
+function extractSkillsFromText(text: string): string[] {
+  return extractSkills(text);
 }
 
 async function fetchWeWorkRemotely(sourceId: string): Promise<FetchedJob[]> {
@@ -44,7 +50,7 @@ async function fetchWeWorkRemotely(sourceId: string): Promise<FetchedJob[]> {
         salaryMin: null,
         salaryMax: null,
         jobType: "full-time",
-        skills: extractSkills(description),
+        skills: extractSkillsFromText(description),
         location: "Remote",
         postedAt: pubDate ? new Date(pubDate).toISOString() : null,
         rawData: { title, link },
@@ -88,18 +94,6 @@ async function fetchRemoteOK(sourceId: string): Promise<FetchedJob[]> {
   }
 }
 
-function extractSkills(text: string): string[] {
-  const commonSkills = [
-    "JavaScript", "TypeScript", "Python", "React", "Node.js", "Go", "Rust",
-    "Java", "Ruby", "PHP", "Swift", "Kotlin", "AWS", "Docker", "Kubernetes",
-    "PostgreSQL", "MongoDB", "GraphQL", "Next.js", "Vue", "Angular", "Django",
-    "Flask", "Rails", "Laravel", "Terraform", "CI/CD", "Git",
-  ];
-
-  const lower = text.toLowerCase();
-  return commonSkills.filter((skill) => lower.includes(skill.toLowerCase()));
-}
-
 export async function fetchJobsFromSources(sourceId?: string): Promise<FetchedJob[]> {
   const supabase = createServiceClient();
 
@@ -115,25 +109,42 @@ export async function fetchJobsFromSources(sourceId?: string): Promise<FetchedJo
   const allJobs: FetchedJob[] = [];
 
   for (const source of sources) {
-    let jobs: FetchedJob[] = [];
+    try {
+      let jobs: FetchedJob[] = [];
 
-    switch (source.slug) {
-      case "weworkremotely":
-        jobs = await fetchWeWorkRemotely(source.id);
-        break;
-      case "remoteok":
-        jobs = await fetchRemoteOK(source.id);
-        break;
-      default:
-        break;
+      switch (source.slug) {
+        case "weworkremotely":
+          jobs = await fetchWeWorkRemotely(source.id);
+          break;
+        case "remoteok":
+          jobs = await fetchRemoteOK(source.id);
+          break;
+        case "indeed":
+          jobs = await scrapeIndeedJobs(source.id, source.config as IndeedScraperConfig);
+          break;
+        default:
+          break;
+      }
+
+      allJobs.push(...jobs);
+
+      await supabase
+        .from("job_sources")
+        .update({ last_sync_at: new Date().toISOString(), last_error: null })
+        .eq("id", source.id);
+    } catch (sourceError) {
+      console.error(`${source.slug} fetch error:`, sourceError);
+      await supabase
+        .from("job_sources")
+        .update({
+          last_error: (sourceError as Error).message,
+          status: "error",
+        })
+        .eq("id", source.id);
+      if (source.slug === "indeed") {
+        throw sourceError;
+      }
     }
-
-    allJobs.push(...jobs);
-
-    await supabase
-      .from("job_sources")
-      .update({ last_sync_at: new Date().toISOString(), last_error: null })
-      .eq("id", source.id);
   }
 
   return allJobs;

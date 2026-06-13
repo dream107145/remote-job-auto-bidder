@@ -121,6 +121,16 @@ export function BidHistoryTable({
                             </a>
                           </p>
                         )}
+                        {"indeed_apply" in (bid.application_data || {}) &&
+                          bid.application_data.indeed_apply != null && (
+                          <p className="text-sm">
+                            <span className="font-medium">Indeed Apply:</span>{" "}
+                            {String(
+                              (bid.application_data.indeed_apply as { message?: string }).message ||
+                                "Processed"
+                            )}
+                          </p>
+                        )}
                         {bid.cover_letter && (
                           <div>
                             <p className="text-sm font-medium">Cover Letter:</p>

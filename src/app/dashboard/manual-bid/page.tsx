@@ -464,7 +464,14 @@ export default function ManualBidPage() {
                         <TableCell className="font-medium">{job.title}</TableCell>
                         <TableCell>{job.company}</TableCell>
                         <TableCell>
-                          <Badge variant="outline">
+                          <Badge
+                            variant="outline"
+                            className={
+                              (job as JobWithSource).source?.slug === "indeed"
+                                ? "border-blue-500 text-blue-700 dark:text-blue-400"
+                                : ""
+                            }
+                          >
                             {(job as JobWithSource).source?.name || "Remote"}
                           </Badge>
                         </TableCell>

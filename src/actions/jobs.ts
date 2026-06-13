@@ -4,6 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { unwrapRelation } from "@/lib/utils";
 import { generateCoverLetter, calculateMatchScore } from "@/lib/ai/cover-letter";
+import { getIndeedCredentials } from "@/actions/indeed";
+import { applyToIndeedJob } from "@/lib/jobs/indeed-applier";
 import type { Job } from "@/types";
 
 async function getAuthUserId() {
@@ -98,7 +100,7 @@ export async function submitManualBid(jobId: string, profileId: string) {
 
   const { data: job, error: jobError } = await supabase
     .from("jobs")
-    .select("*")
+    .select("*, source:job_sources(slug, name)")
     .eq("id", jobId)
     .single();
 
@@ -151,6 +153,28 @@ export async function submitManualBid(jobId: string, profileId: string) {
       jobDescription: job.description || "",
     });
 
+    const sourceSlug = (job.source as { slug?: string } | null)?.slug;
+    let indeedApply:
+      | { applied: boolean; method: string; message: string }
+      | undefined;
+
+    if (sourceSlug === "indeed") {
+      const credentials = await getIndeedCredentials(userId);
+      if (credentials) {
+        indeedApply = await applyToIndeedJob({
+          jobUrl: job.url,
+          email: credentials.email,
+          password: credentials.password,
+          coverLetter,
+          applicantName: profile.name,
+          applicantEmail: profile.email,
+        });
+      }
+    }
+
+    const bidStatus =
+      indeedApply?.applied ? "submitted" : indeedApply ? "pending" : "submitted";
+
     const { data: bid, error: bidError } = await supabase
       .from("bids")
       .insert({
@@ -162,12 +186,13 @@ export async function submitManualBid(jobId: string, profileId: string) {
         job_url: job.url,
         cover_letter: coverLetter,
         match_score: matchScore,
-        status: "submitted",
+        status: bidStatus,
         submitted_at: new Date().toISOString(),
         application_data: {
           manual_bid: true,
           match_score: matchScore,
-          submitted_via: "manual_bid_page",
+          submitted_via: sourceSlug === "indeed" ? "indeed_scraper" : "manual_bid_page",
+          ...(indeedApply ? { indeed_apply: indeedApply } : {}),
         },
       })
       .select()
@@ -193,6 +218,7 @@ export async function submitManualBid(jobId: string, profileId: string) {
         company: job.company,
         matchScore,
         coverLetter,
+        indeedApply,
       },
     };
   } catch (err) {

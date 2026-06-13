@@ -36,6 +36,8 @@ export interface User {
   two_factor_enabled: boolean;
   bids_used: number;
   profiles_used: number;
+  indeed_email: string | null;
+  indeed_auto_apply: boolean;
   created_at: string;
   updated_at: string;
 }

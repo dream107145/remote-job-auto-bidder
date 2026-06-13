@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Switch } from "@/components/ui/switch";
 import { changePassword } from "@/actions/auth";
 import { Spinner } from "@/components/ui/spinner";
+import { IndeedSettingsCard } from "@/components/settings/indeed-settings-card";
 
 export default function SettingsPage() {
   const [isPending, startTransition] = useTransition();
@@ -62,6 +63,8 @@ export default function SettingsPage() {
             </form>
           </CardContent>
         </Card>
+
+        <IndeedSettingsCard />
 
         <Card>
           <CardHeader>
