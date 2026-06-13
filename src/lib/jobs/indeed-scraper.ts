@@ -1,16 +1,14 @@
 import * as cheerio from "cheerio";
-import type { Page } from "playwright";
+import type { Page } from "playwright-core";
 import type { FetchedJob } from "@/lib/jobs/fetcher";
 import { extractSkills } from "@/lib/jobs/skills";
+import { launchPlaywrightBrowser, USER_AGENT } from "@/lib/jobs/playwright-browser";
 
 const INDEED_HOSTS: Record<string, string> = {
   us: "https://www.indeed.com",
   uk: "https://uk.indeed.com",
   ca: "https://ca.indeed.com",
 };
-
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 const BLOCKED_TITLE = /just a moment|security check/i;
 
@@ -65,11 +63,9 @@ function isBlockedPage(html: string, title: string) {
 }
 
 async function createIndeedBrowserSession() {
-  const { chromium } = await import("playwright");
-
-  // Indeed/Cloudflare blocks plain HTTP and headless browsers. Headed mode is the default.
-  const headless = process.env.INDEED_SCRAPE_HEADLESS === "true";
-  const browser = await chromium.launch({
+  const headless =
+    process.env.VERCEL === "1" || process.env.INDEED_SCRAPE_HEADLESS === "true";
+  const browser = await launchPlaywrightBrowser({
     headless,
     args: ["--disable-blink-features=AutomationControlled"],
   });

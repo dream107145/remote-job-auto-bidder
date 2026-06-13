@@ -4,6 +4,9 @@ import { rateLimit } from "@/lib/rate-limit";
 import { scheduleJobSync } from "@/lib/queue/bid-queue";
 import { ADMIN_PAGE_SIZE } from "@/lib/constants";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 async function verifyAdmin() {
   const supabase = createClient();
   const {

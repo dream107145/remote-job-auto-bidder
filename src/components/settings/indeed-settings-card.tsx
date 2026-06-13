@@ -112,7 +112,6 @@ export function IndeedSettingsCard() {
               <Switch checked={autoApply} onCheckedChange={setAutoApply} />
             </div>
             <p className="text-xs text-muted-foreground">
-              Requires Playwright Chromium on the server (`npx playwright install chromium`).
               Admins sync Indeed jobs from Admin → Jobs. Respect Indeed&apos;s terms of service.
             </p>
             <Button type="submit" disabled={isPending}>

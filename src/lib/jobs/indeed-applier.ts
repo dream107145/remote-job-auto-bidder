@@ -1,3 +1,5 @@
+import { launchPlaywrightBrowser, USER_AGENT } from "@/lib/jobs/playwright-browser";
+
 export interface IndeedApplyInput {
   jobUrl: string;
   email: string;
@@ -23,16 +25,13 @@ export async function applyToIndeedJob(input: IndeedApplyInput): Promise<IndeedA
   }
 
   try {
-    const { chromium } = await import("playwright");
-
-    const browser = await chromium.launch({
-      headless: process.env.INDEED_HEADLESS !== "false",
-    });
+    const headless =
+      process.env.VERCEL === "1" || process.env.INDEED_HEADLESS !== "false";
+    const browser = await launchPlaywrightBrowser({ headless });
 
     try {
       const context = await browser.newContext({
-        userAgent:
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        userAgent: USER_AGENT,
       });
       const page = await context.newPage();
       page.setDefaultTimeout(30000);

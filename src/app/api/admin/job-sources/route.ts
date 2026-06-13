@@ -3,6 +3,9 @@ import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { rateLimit } from "@/lib/rate-limit";
 import { scheduleJobSync } from "@/lib/queue/bid-queue";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 async function verifyAdmin() {
   const supabase = createClient();
   const {

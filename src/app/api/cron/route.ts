@@ -3,6 +3,9 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { processAutoBids, scheduleJobSync } from "@/lib/queue/bid-queue";
 import { rateLimit } from "@/lib/rate-limit";
 
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   const limited = rateLimit(request);
   if (limited) return limited;
